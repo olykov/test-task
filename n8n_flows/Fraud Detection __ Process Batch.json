@@ -1,0 +1,559 @@
+{
+  "name": "Fraud Detection // Process Batch",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "jsonExample",
+        "jsonExample": "{\n    \"msg_id\": \"1234567890-0\", \n    \"request_id\": \"req_abc123\",\n    \"enqueued_at\": \"2026-05-06T12:00:00.000Z\",\n    \"payload\": {\n      \"idempotency_key\": \"test-001\",\n      \"driver_id\": \"drv_0002\",\n      \"trip_id\": \"trp_00165\",\n      \"complaint_text\": \"test\",\n      \"claimed_amount\": 100,\n      \"submitted_at\": \"2026-05-06T12:00:00.000Z\",\n      \"received_at\": \"2026-05-06T12:00:00.000Z\"\n    }\n}"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "71b74021-6267-4f75-b965-ffbbd8180964",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "jsCode": "const { MongoClient } = require('mongodb');\n\nconst MONGO_URL = 'mongodb://app:app@mongodb:27017/fraud?authSource=admin';\n\nconst items = $input.all();\n\nif (items.length === 0) return [];\n\nconst virtualDocs = items.map((it) => {\n  const p = it.json.payload;\n  return {\n    msg_id: it.json.msg_id,\n    request_id: it.json.request_id,\n    enqueued_at: it.json.enqueued_at,\n    driver_id: p.driver_id,\n    trip_id: p.trip_id,\n    payload: p,\n  };\n});\n\nconst mongo = new MongoClient(MONGO_URL, { serverSelectionTimeoutMS: 5000 });\n\ntry {\n  await mongo.connect();\n  const db = mongo.db('fraud');\n\n  const enriched = await db.aggregate([\n    { $documents: virtualDocs },\n\n    {\n      $lookup: {\n        from: 'drivers',\n        localField: 'driver_id',\n        foreignField: 'driver_id',\n        as: '_driver',\n      },\n    },\n    { $unwind: { path: '$_driver', preserveNullAndEmptyArrays: true } },\n\n    {\n      $lookup: {\n        from: 'trips',\n        localField: 'trip_id',\n        foreignField: 'trip_id',\n        as: '_trip',\n      },\n    },\n    { $unwind: { path: '$_trip', preserveNullAndEmptyArrays: true } },\n\n    {\n      $lookup: {\n        from: 'decisions',\n        let: { drvId: '$driver_id' },\n        pipeline: [\n          { $match: { $expr: { $eq: ['$driver_id', '$$drvId'] } } },\n          { $sort: { decided_at: -1 } },\n          { $limit: 5 },\n          { $project: { _id: 0, verdict: 1, source: 1, risk_score: 1, decided_at: 1 } },\n        ],\n        as: '_recent_decisions',\n      },\n    },\n\n    {\n      $lookup: {\n        from: 'trips',\n        let: { drvId: '$driver_id' },\n        pipeline: [\n          { $match: { $expr: { $eq: ['$driver_id', '$$drvId'] } } },\n          { $sort: { completed_at: -1 } },\n          { $limit: 5 },\n          { $project: { _id: 0, trip_id: 1, fare_amount: 1, payment_status: 1, completed_at: 1 } },\n        ],\n        as: '_recent_trips',\n      },\n    },\n\n    {\n      $project: {\n        _id: 0,\n        msg_id: 1,\n        request_id: 1,\n        enqueued_at: 1,\n        payload: 1,\n        driver: '$_driver',\n        trip: '$_trip',\n        recent_decisions: '$_recent_decisions',\n        recent_trips: '$_recent_trips',\n      },\n    },\n  ]).toArray();\n\n  const byRequestId = new Map(enriched.map((e) => [e.request_id, e]));\n\n  return items.map((it) => {\n    const e = byRequestId.get(it.json.request_id);\n    return {\n      json: e || {\n        msg_id: it.json.msg_id,\n        request_id: it.json.request_id,\n        enqueued_at: it.json.enqueued_at,\n        payload: it.json.payload,\n        driver: null,\n        trip: null,\n        recent_decisions: [],\n        recent_trips: [],\n      },\n    };\n  });\n} finally {\n  await mongo.close();\n}\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        192,
+        0
+      ],
+      "id": "4c95e03f-9ac9-45a4-a638-72b3047d9961",
+      "name": "mongo enrich"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "QB82SKsKOsnFj1nA",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/QB82SKsKOsnFj1nA",
+          "cachedResultName": "Fraud Detection // Rules Engine"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "msg_id": "={{ $json.msg_id }}",
+            "request_id": "={{ $json.request_id }}",
+            "enqueued_at": "={{ $json.enqueued_at }}",
+            "payload": "={{ $json.payload }}",
+            "driver": "={{ $json.driver }}",
+            "trip": "={{ $json.trip }}",
+            "recent_decisions": "={{ $json.recent_decisions }}",
+            "recent_trips": "={{ $json.recent_trips }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "msg_id",
+              "displayName": "msg_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "request_id",
+              "displayName": "request_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "enqueued_at",
+              "displayName": "enqueued_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "payload",
+              "displayName": "payload",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            },
+            {
+              "id": "driver",
+              "displayName": "driver",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            },
+            {
+              "id": "trip",
+              "displayName": "trip",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            },
+            {
+              "id": "recent_decisions",
+              "displayName": "recent_decisions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "array",
+              "removed": false
+            },
+            {
+              "id": "recent_trips",
+              "displayName": "recent_trips",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "array",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        400,
+        0
+      ],
+      "id": "952f0377-8c98-411e-9507-c3ba8bfa6091",
+      "name": "Call 'Fraud Detection // Rules Engine'"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "wWZpKiMjQO0NaT2q",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/wWZpKiMjQO0NaT2q",
+          "cachedResultName": "Fraud Detection // AI Classifier (OpenRouter)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "request_id": "={{ $json.request_id }}",
+            "payload": "={{ $json.payload }}",
+            "driver": "={{ $json.driver }}",
+            "trip": "={{ $json.trip }}",
+            "recent_decisions": "={{ $json.recent_decisions }}",
+            "recent_trips": "={{ $json.recent_trips }}",
+            "msg_id": "={{ $json.msg_id }}",
+            "enqueued_at": "={{ $json.enqueued_at }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "msg_id",
+              "displayName": "msg_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "request_id",
+              "displayName": "request_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "enqueued_at",
+              "displayName": "enqueued_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "payload",
+              "displayName": "payload",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            },
+            {
+              "id": "driver",
+              "displayName": "driver",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            },
+            {
+              "id": "trip",
+              "displayName": "trip",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "object",
+              "removed": false
+            },
+            {
+              "id": "recent_decisions",
+              "displayName": "recent_decisions",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "array",
+              "removed": false
+            },
+            {
+              "id": "recent_trips",
+              "displayName": "recent_trips",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "array",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "mode": "each",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        800,
+        144
+      ],
+      "id": "7268be57-49ba-4c34-b4de-e85846191332",
+      "name": "Call 'Fraud Detection // AI Classifier (OpenRouter)'"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "6fd22661-8289-4f69-a984-cbeea5678c2b",
+              "leftValue": "={{ $json.rule_decision.verdict }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        624,
+        0
+      ],
+      "id": "a5fa2449-69a9-44fd-b7fd-e07ba5d05417",
+      "name": "if decision"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1024,
+        0
+      ],
+      "id": "f48f35b1-1f3b-40f6-a8b5-396d7dfa9462",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "jsCode": "const { MongoClient } = require('mongodb');\n\nconst MONGO_URL = 'mongodb://app:app@mongodb:27017/fraud?authSource=admin';\nconst mongo = new MongoClient(MONGO_URL, {\n  serverSelectionTimeoutMS: 5000,\n  maxPoolSize: 20,\n});\n\ntry {\n  await mongo.connect();\n  const db = mongo.db('fraud');\n  const decisionsCol = db.collection('decisions');\n  const metricsCol = db.collection('metrics');\n\n  const items = $input.all();\n  if (items.length === 0) return [];\n\n  const now = new Date();\n  const decisionDocs = [];\n  const metricDocs = [];\n\n  for (const item of items) {\n    const m = item.json;\n    const decision = m.ai_decision ?? m.rule_decision;\n    const source = decision?.source ?? 'unknown';\n    const isAiFailure = source.startsWith('ai-') && source !== 'ai' && source !== 'ai-cache';\n    const finalVerdict = decision?.verdict ?? (isAiFailure ? 'needs_review' : 'pending');\n\n    const receivedAt = m.payload?.received_at ? new Date(m.payload.received_at) : null;\n    const enqueuedAt = m.enqueued_at ? new Date(m.enqueued_at) : null;\n    const dqMs = m._dequeued_at ? parseInt(m._dequeued_at, 10) : null;\n    const dequeuedAt = (dqMs && !isNaN(dqMs)) ? new Date(dqMs) : null;\n\n    const totalLatencyMs = receivedAt ? now.getTime() - receivedAt.getTime() : null;\n    const queueWaitMs = (dequeuedAt && enqueuedAt) ? dequeuedAt.getTime() - enqueuedAt.getTime() : null;\n    const serviceTimeMs = dequeuedAt ? now.getTime() - dequeuedAt.getTime() : null;\n\n    decisionDocs.push({\n      request_id: m.request_id,\n      driver_id: m.payload?.driver_id,\n      trip_id: m.payload?.trip_id,\n      verdict: finalVerdict,\n      risk_score: decision?.risk_score ?? null,\n      source,\n      reasoning: decision?.reasoning ?? '',\n      key_factors: decision?.key_factors ?? [],\n      decided_at: now,\n      ai_model: m.ai_meta?.model ?? null,\n      ai_tokens: m.ai_meta?.tokens ?? null,\n      cb_state: m.ai_meta?.cb?.state ?? null,\n      cb_trip_reason: m.ai_meta?.cb?.trip_reason ?? null,\n    });\n\n    metricDocs.push({\n      request_id: m.request_id,\n      timestamp: now,\n      total_latency_ms: totalLatencyMs,\n      queue_wait_ms: queueWaitMs,\n      service_time_ms: serviceTimeMs,\n      ai_called: source.startsWith('ai'),\n      ai_success: source === 'ai',\n      cache_hit: source === 'ai-cache',\n      ai_unavailable: source === 'ai-unavailable',\n      decision_source: source,\n      decision_verdict: finalVerdict,\n      risk_score: decision?.risk_score ?? null,\n      cb_state: m.ai_meta?.cb?.state ?? null,\n      cb_trip_reason: m.ai_meta?.cb?.trip_reason ?? null,\n      cb_tripped: !!m.ai_meta?.cb?.trip_reason,\n    });\n  }\n\n  const writtenIdx = new Set();\n  try {\n    await decisionsCol.insertMany(decisionDocs, { ordered: false });\n    for (let i = 0; i < decisionDocs.length; i++) writtenIdx.add(i);\n  } catch (err) {\n    const writeErrors = err.writeErrors || (err.result?.result?.writeErrors) || [];\n    const failedIdx = new Set(writeErrors.map((we) => we.index));\n    for (let i = 0; i < decisionDocs.length; i++) {\n      if (!failedIdx.has(i)) {\n        writtenIdx.add(i);\n      } else {\n        const we = writeErrors.find((w) => w.index === i);\n        if (we?.code === 11000) writtenIdx.add(i);\n      }\n    }\n  }\n\n  try {\n    await metricsCol.insertMany(metricDocs, { ordered: false });\n  } catch {}\n\n  return items.map((item, i) => ({\n    json: {\n      ...item.json,\n      _written: writtenIdx.has(i),\n      _decision_source: decisionDocs[i].source,\n    },\n  }));\n} finally {\n  await mongo.close();\n}\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1456,
+        -16
+      ],
+      "id": "441f5934-a8c6-4b6a-8732-ceb612203ca7",
+      "name": "Bulk Mongo write"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "6a05dcb1-6ed4-496c-b4cf-149003a74e98",
+              "leftValue": "={{ $json._written }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1664,
+        -16
+      ],
+      "id": "41240d53-5914-4fc6-addb-06590b91eb52",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "jsCode": "const Redis = require('ioredis');\n\nconst STREAM_KEY = 'fraud:stream:webhooks';\nconst GROUP_NAME = 'workers';\n\nconst redis = new Redis({\n  host: 'redis',\n  port: 6379,\n  connectTimeout: 5000,\n  commandTimeout: 5000,\n  maxRetriesPerRequest: 2,\n});\n\ntry {\n  const items = $input.all();\n  if (items.length === 0) return [];\n\n  const pipeline = redis.pipeline();\n  const acked = [];\n\n  for (const item of items) {\n    const m = item.json;\n    if (m.msg_id) {\n      pipeline.xack(STREAM_KEY, GROUP_NAME, m.msg_id);\n      acked.push({ msg_id: m.msg_id, source: m._decision_source });\n    }\n  }\n\n  if (acked.length > 0) {\n    await pipeline.exec();\n  }\n\n  const groups = {};\n  for (const a of acked) groups[a.source] = (groups[a.source] || 0) + 1;\n\n  return [{\n    json: {\n      acked: acked.length,\n      by_source: groups,\n    },\n  }];\n} finally {\n  await redis.quit();\n}\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1952,
+        -32
+      ],
+      "id": "9351b8ea-8a71-4769-a28a-d6df2bddd89d",
+      "name": "Bulk Redis ACK"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "_dequeued_at",
+        "key": "=fraud:dq:{{ $json.request_id }}",
+        "keyType": "string",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        1152,
+        -112
+      ],
+      "id": "e9658552-1084-4cca-a68d-2fbfc5cc59af",
+      "name": "Redis",
+      "alwaysOutputData": true,
+      "credentials": {
+        "redis": {
+          "id": "ccEsgRe97Od7Ornt",
+          "name": "Fraud Detection // Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1312,
+        -16
+      ],
+      "id": "0ae6ea1b-2734-431e-9f33-e48635e29213",
+      "name": "Merge1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "mongo enrich": {
+      "main": [
+        [
+          {
+            "node": "Call 'Fraud Detection // Rules Engine'",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call 'Fraud Detection // Rules Engine'": {
+      "main": [
+        [
+          {
+            "node": "if decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call 'Fraud Detection // AI Classifier (OpenRouter)'": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "if decision": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call 'Fraud Detection // AI Classifier (OpenRouter)'",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Redis",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Bulk Mongo write": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Bulk Redis ACK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "mongo enrich",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redis": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge1": {
+      "main": [
+        [
+          {
+            "node": "Bulk Mongo write",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "643e4a05-7cf0-4cb0-a7b4-46c012510733",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2f246882be91b80e2c29395d0dfa883349220f620aa202572208b75e22e3dcd9"
+  },
+  "id": "qY5zMrzHsefKXoBX",
+  "tags": [
+    {
+      "updatedAt": "2026-05-06T14:11:18.535Z",
+      "createdAt": "2026-05-06T14:11:18.535Z",
+      "id": "217PWFITe3bppCFW",
+      "name": "test"
+    }
+  ]
+}

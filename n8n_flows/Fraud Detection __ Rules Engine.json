@@ -1,0 +1,70 @@
+{
+  "name": "Fraud Detection // Rules Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "jsonExample",
+        "jsonExample": "{\n  \"msg_id\": \"1777749600000-0\",\n  \"request_id\": \"req_a1b2c3d4-1234-5678-9abc-def012345678\",\n  \"enqueued_at\": \"2026-05-03T12:00:00.000Z\",\n  \"payload\": {\n    \"idempotency_key\": \"example-key-001\",\n    \"driver_id\": \"drv_0001\",\n    \"trip_id\": \"trp_00001\",\n    \"complaint_text\": \"Я виконав поїздку, але не отримав оплату\",\n    \"claimed_amount\": 145.5,\n    \"submitted_at\": \"2026-05-03T11:59:59.000Z\",\n    \"received_at\": \"2026-05-03T12:00:00.000Z\"\n  },\n  \"driver\": {\n    \"driver_id\": \"drv_0001\",\n    \"name\": \"Alex Sipes-Effertz\",\n    \"registered_at\": \"2022-04-04T05:28:33.598Z\",\n    \"total_trips\": 1521,\n    \"account_status\": \"active\",\n    \"flags\": [\"recent_address_change\"],\n    \"history\": {\n      \"complaints_30d\": 3,\n      \"complaints_90d\": 27,\n      \"complaints_lifetime\": 29,\n      \"fraud_count_lifetime\": 8,\n      \"legitimate_count_lifetime\": 21,\n      \"approval_rate\": 0.72,\n      \"last_complaint_at\": \"2026-04-09T13:57:50.287Z\"\n    },\n    \"metadata\": {\n      \"region\": \"Kharkiv\",\n      \"car_class\": \"comfort\",\n      \"avg_rating\": 3.9\n    }\n  },\n  \"trip\": {\n    \"trip_id\": \"trp_00001\",\n    \"driver_id\": \"drv_0001\",\n    \"rider_id\": \"rid_500\",\n    \"completed_at\": \"2026-04-30T10:00:00.000Z\",\n    \"fare_amount\": 145.5,\n    \"distance_km\": 12.3,\n    \"duration_min\": 28,\n    \"pickup_address\": \"vul. Khreshchatyk 1\",\n    \"dropoff_address\": \"vul. Sahaydachnoho 12\",\n    \"status\": \"completed\",\n    \"payment_status\": \"paid\"\n  },\n  \"recent_decisions\": [\n    { \"verdict\": \"legitimate\", \"source\": \"ai\", \"risk_score\": 0.2, \"decided_at\": \"2026-05-01T...\" }\n  ],\n  \"recent_trips\": [\n    { \"trip_id\": \"trp_00100\", \"fare_amount\": 200, \"payment_status\": \"paid\", \"completed_at\": \"2026-04-30T...\" }\n  ]\n}\n"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "2ddda325-cd69-4a5d-97f0-4fb58e472795",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nfunction classify({ payload, driver, trip }) {\n  const text = (payload.complaint_text || '').trim();\n  if (text.length < 5) {\n    return { \n      verdict: 'spam', \n      source: 'rules-spam', \n      reasoning: 'complaint text too short (<5 chars)', \n      risk_score: 0.95 \n    };\n  }\n\n  // не знайшли drive-a\n  if (!driver) {\n    return { \n      verdict: 'fraud', \n      source: 'rules-unknown-driver', \n      reasoning: `driver_id ${payload.driver_id} not found`, \n      risk_score: 0.99 \n    };\n  }\n\n  // не знайшли такий trip\n  if (!trip) {\n    return { \n      verdict: 'fraud', \n      source: 'rules-unknown-trip', \n      reasoning: `trip_id ${payload.trip_id} not found`, \n      risk_score: 0.95 \n    };\n  }\n\n  // данний такий належить іншому драйверу \n  if (trip.driver_id !== payload.driver_id) {\n    return {\n      verdict: 'fraud',\n      source: 'rules-trip-driver-mismatch',\n      reasoning: `complainant ${payload.driver_id} but trip belongs to ${trip.driver_id}`,\n      risk_score: 0.99,\n    };\n  }\n\n  // \n  if (driver.account_status === 'banned') {\n    return { \n      verdict: 'fraud', \n      source: 'rules-banned', \n      reasoning: 'driver account banned', \n      risk_score: 1.0 \n    };\n  }\n\n  //\n  if (driver.account_status === 'suspended') {\n    return { \n      verdict: 'fraud', \n      source: 'rules-suspended', \n      reasoning: 'driver account suspended', \n      risk_score: 0.9 \n    };\n  }\n\n  //\n  if ((driver.history?.fraud_count_lifetime || 0) >= 5) {\n    return {\n      verdict: 'fraud',\n      source: 'rules-many-fraud-requests',\n      reasoning: `The driver has ${driver.history.fraud_count_lifetime} prior fraud confirmations`,\n      risk_score: 0.85,\n    };\n  }\n\n  //\n  const flags = driver.flags || [];\n  if (flags.includes('frequent_complaints') && (driver.history?.approval_rate ?? 1) < 0.4) {\n    return {\n      verdict: 'fraud',\n      source: 'rules-low-approval-flagged',\n      reasoning: `flagged \"frequent_complaints\" with approval_rate ${driver.history.approval_rate}`,\n      risk_score: 0.8,\n    };\n  }\n  const claimed = payload.claimed_amount;\n  if (typeof claimed === 'number' && claimed > trip.fare_amount * 1.5) {\n    return {\n      verdict: 'fraud',\n      source: 'rules-amount-toohigh',\n      reasoning: `claimed ${claimed} vs fare ${trip.fare_amount}`,\n      risk_score: 0.85,\n    };\n  }\n  return {\n    verdict: null,\n    source: 'rules-passthrough',\n    reasoning: 'no rule matched',\n    risk_score: null,\n  };\n}\n\n// Return decision per item, preserving caller's input for traceability\nreturn items.map((it) => ({\n  json: {\n    ...it.json,\n    rule_decision: classify(it.json),\n  },\n}));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        0
+      ],
+      "id": "77de8a14-bdd5-4df0-be5d-4bbfd0f4bbee",
+      "name": "Classify"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "894ba647-c68d-451e-8c6d-0fef56a30863",
+  "meta": {
+    "instanceId": "2f246882be91b80e2c29395d0dfa883349220f620aa202572208b75e22e3dcd9"
+  },
+  "id": "QB82SKsKOsnFj1nA",
+  "tags": [
+    {
+      "updatedAt": "2026-05-02T17:31:09.895Z",
+      "createdAt": "2026-05-02T17:31:09.895Z",
+      "id": "b3zPNDTvGOYLUTaS",
+      "name": "fraude-detection"
+    },
+    {
+      "updatedAt": "2026-05-01T16:17:24.768Z",
+      "createdAt": "2026-05-01T16:17:24.768Z",
+      "id": "7QtZ0qLSprKQ6lad",
+      "name": "stage"
+    }
+  ]
+}

@@ -1,0 +1,477 @@
+{
+  "name": "Fraud Detection // Ingress",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "fraud",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "4939c9f4-ded9-4fa3-8a27-00f8c7288715",
+      "name": "Webhook",
+      "webhookId": "b4db77df-3765-43e2-ae8b-4d955454996a"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.item.json.body || {};\n\nconst required = ['idempotency_key', 'driver_id', 'trip_id', 'complaint_text'];\nconst missing = required.filter((f) => !body[f] || (typeof body[f] === 'string' && !body[f].trim()));\n\nif (missing.length > 0) {\n  return {\n    json: {\n      _validation: {\n        ok: false,\n        error: `Missing or empty required fields: ${missing.join(', ')}`,\n      },\n    },\n  };\n}\n\nif (typeof body.complaint_text !== 'string' || body.complaint_text.length > 5000) {\n  return {\n    json: {\n      _validation: {\n        ok: false,\n        error: 'complaint_text must be string ≤ 5000 chars',\n      },\n    },\n  };\n}\n\nreturn {\n  json: {\n    _validation: { ok: true },\n    payload: {\n      idempotency_key: String(body.idempotency_key),\n      driver_id: String(body.driver_id),\n      trip_id: String(body.trip_id),\n      complaint_text: body.complaint_text,\n      claimed_amount: typeof body.claimed_amount === 'number' ? body.claimed_amount : null,\n      submitted_at: body.submitted_at || new Date().toISOString(),\n      received_at: new Date().toISOString(),\n    },\n  },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        0
+      ],
+      "id": "0c0a9aea-d597-4b63-bd9a-284fc0c18160",
+      "name": "Validate"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "06dd465f-c324-4154-a31f-888abe5f47f3",
+              "leftValue": "={{ $json._validation.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        416,
+        0
+      ],
+      "id": "9a7fb654-0626-4d65-ae06-e49298260198",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"error\",\n  \"error\": \"{{ $json._validation.error }}\"\n}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        656,
+        16
+      ],
+      "id": "52b18d6e-d099-497c-8fc3-7ca3378b2b37",
+      "name": "respond 400"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        656,
+        -288
+      ],
+      "id": "569122e9-adaf-4a3f-b09e-39b8ff99bc2e",
+      "name": "to Redis"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"error\",\n  \"error\": \"Service temporarily unavailable\"\n}",
+        "options": {
+          "responseCode": 503,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Retry-After",
+                "value": "5"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1504,
+        -48
+      ],
+      "id": "6dc6806c-d478-41af-99de-2c104d9b9d7b",
+      "name": "respond 503"
+    },
+    {
+      "parameters": {
+        "action": "generate",
+        "dataPropertyName": "request_uuid"
+      },
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 2,
+      "position": [
+        864,
+        -288
+      ],
+      "id": "c487c4c1-8a4c-47fc-810a-d31b0b515efc",
+      "name": "create request_uuid"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "overflow",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "99731055-51ae-44ae-b0be-96c727f02ca7"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "overflow"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "5889d364-8e44-4643-905e-4f4538644eea",
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "duplicate",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "duplicate"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "69e632cb-b781-4605-b614-f57d541d4a4f",
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "accepted",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "accepted"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        1504,
+        -320
+      ],
+      "id": "0e8c2307-3ff9-4360-8dcb-5549d8b7386e",
+      "name": "redis status check"
+    },
+    {
+      "parameters": {
+        "jsCode": "const LUA = `\nlocal idemKey = KEYS[1]\nlocal streamKey = KEYS[2]\nlocal dlqKey = KEYS[3]\nlocal requestId = ARGV[1]\nlocal payloadJson = ARGV[2]\nlocal enqueuedAt = ARGV[3]\nlocal maxLen = tonumber(ARGV[4])\n\n-- (1) Idempotency check\nlocal existing = redis.call('GET', idemKey)\nif existing then\n  return {0, existing, 'duplicate'}\nend\n\n-- (2) Overflow check BEFORE claiming idem key\nlocal streamLen = redis.call('XLEN', streamKey)\nif streamLen >= maxLen then\n  -- Push to DLQ instead. Don't claim idem so client can retry later.\n  redis.call('XADD', dlqKey, 'MAXLEN', '~', '10000', '*',\n    'request_id', requestId,\n    'payload', payloadJson,\n    'enqueued_at', enqueuedAt,\n    'reason', 'main_queue_overflow')\n  return {2, requestId, 'overflow'}\nend\n\n-- (3) Claim idem key atomically\nlocal ok = redis.call('SET', idemKey, requestId, 'NX', 'EX', 86400)\nif not ok then\n  -- race: someone else just set it (within microseconds)\n  local now = redis.call('GET', idemKey)\n  return {0, now, 'duplicate'}\nend\n\n-- (4) Enqueue\nredis.call('XADD', streamKey, '*',\n  'request_id', requestId,\n  'payload', payloadJson,\n  'enqueued_at', enqueuedAt)\n\nreturn {1, requestId, 'accepted'}\n`;\n\nconst item = $input.first();\nconst payload = item.json.payload;\nconst requestId = `req_${item.json.request_uuid}`;\nconst enqueuedAt = new Date().toISOString();\nconst MAX_QUEUE_LEN = 100000;\n\nconst idemKey = `fraud:idem:${payload.idempotency_key}`;\nconst streamKey = 'fraud:stream:webhooks';\nconst dlqKey = 'fraud:stream:webhooks:dlq';\n\nconst Redis = require('ioredis');\nconst redis = new Redis({\n  host: 'redis',\n  port: 6379,\n  connectTimeout: 5000,\n  commandTimeout: 5000,\n  maxRetriesPerRequest: 1,\n});\n\ntry {\n  const [statusCode, returnedId, statusName] = await redis.eval(\n    LUA,\n    3, \n    idemKey,\n    streamKey,\n    dlqKey,\n    requestId,\n    JSON.stringify(payload),\n    enqueuedAt,\n    String(MAX_QUEUE_LEN),\n  );\n\n  await redis.quit();\n\n  return [\n    {\n      json: {\n        _redis: { ok: true },\n        status: statusName,\n        is_duplicate: statusCode === 0,\n        is_overflow: statusCode === 2,\n        request_id: returnedId,\n        payload,\n      },\n    },\n  ];\n} catch (err) {\n  try { await redis.quit(); } catch {}\n  return [\n    {\n      json: {\n        _redis: { ok: false, error: String(err.message || err) },\n        payload,\n      },\n    },\n  ];\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1072,
+        -288
+      ],
+      "id": "d63cbb9b-6c85-451b-88a2-3e0ed603e515",
+      "name": "claim idem / enqueue / overflow check"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"accepted\",\n  \"request_id\": \"{{ $json.request_id }}\"\n}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1856,
+        -160
+      ],
+      "id": "d6392fe2-3ac8-442b-9b16-5874e7a37407",
+      "name": "respond 202"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"duplicate\",\n  \"request_id\": \"{{ $json.request_id }}\"\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1856,
+        -304
+      ],
+      "id": "18b09d84-a122-47c8-9a11-f1260604b46f",
+      "name": "respond 200"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \n  \"status\": \"error\", \n  \"error\": \"Queue overloaded, retry later\", \n  \"request_id\": \"{{ $json.request_id }}\",\n  \"retry_after_seconds\": 30\n}",
+        "options": {
+          "responseCode": 503,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Retry-After",
+                "value": "30"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1856,
+        -448
+      ],
+      "id": "7ad55a32-e288-4bc1-89e2-b1dfb7aaa345",
+      "name": "respond 503 overflow"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "8203108c-9204-4fcb-951a-f67bc67314fb",
+              "leftValue": "={{ $json._redis.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1264,
+        -288
+      ],
+      "id": "27ddb776-215f-4a13-99ce-7ddf92720b57",
+      "name": "redis down?"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "to Redis",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "respond 400",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "to Redis": {
+      "main": [
+        [
+          {
+            "node": "create request_uuid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "create request_uuid": {
+      "main": [
+        [
+          {
+            "node": "claim idem / enqueue / overflow check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "redis status check": {
+      "main": [
+        [
+          {
+            "node": "respond 503 overflow",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "respond 200",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "respond 202",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "claim idem / enqueue / overflow check": {
+      "main": [
+        [
+          {
+            "node": "redis down?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "redis down?": {
+      "main": [
+        [
+          {
+            "node": "redis status check",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "respond 503",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "3e456752-460d-430f-b5b7-b8401481182c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2f246882be91b80e2c29395d0dfa883349220f620aa202572208b75e22e3dcd9"
+  },
+  "id": "J1h536KRNOQFqzKC",
+  "tags": [
+    {
+      "updatedAt": "2026-05-02T17:31:09.895Z",
+      "createdAt": "2026-05-02T17:31:09.895Z",
+      "id": "b3zPNDTvGOYLUTaS",
+      "name": "fraude-detection"
+    },
+    {
+      "updatedAt": "2026-05-01T16:17:24.768Z",
+      "createdAt": "2026-05-01T16:17:24.768Z",
+      "id": "7QtZ0qLSprKQ6lad",
+      "name": "stage"
+    }
+  ]
+}

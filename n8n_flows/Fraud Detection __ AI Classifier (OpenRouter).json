@@ -1,0 +1,963 @@
+{
+  "name": "Fraud Detection // AI Classifier (OpenRouter)",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "jsonExample",
+        "jsonExample": "{\n  \"msg_id\": \"1234567890-0\",\n  \"request_id\": \"req_a1b2c3d4-1234-5678-9abc-def012345678\",\n  \"enqueued_at\": \"2026-05-04T12:00:00.000Z\",\n  \"payload\": {\n    \"idempotency_key\": \"example-key-001\",\n    \"driver_id\": \"drv_0002\",\n    \"trip_id\": \"trp_00165\",\n    \"complaint_text\": \"Я виконав поїздку, оплата не зарахувалася\",\n    \"claimed_amount\": 100,\n    \"submitted_at\": \"2026-05-03T11:59:59.000Z\",\n    \"received_at\": \"2026-05-03T12:00:00.000Z\"\n  },\n  \"driver\": {\n    \"driver_id\": \"drv_0002\",\n    \"name\": \"Lee Mohr\",\n    \"registered_at\": \"2021-08-31T05:37:05.784Z\",\n    \"total_trips\": 4745,\n    \"account_status\": \"active\",\n    \"flags\": [],\n    \"history\": {\n      \"complaints_30d\": 1,\n      \"complaints_90d\": 5,\n      \"complaints_lifetime\": 7,\n      \"fraud_count_lifetime\": 0,\n      \"legitimate_count_lifetime\": 7,\n      \"approval_rate\": 1.0,\n      \"last_complaint_at\": \"2026-03-16T11:53:19.355Z\"\n    }\n  },\n  \"trip\": {\n    \"trip_id\": \"trp_00165\",\n    \"driver_id\": \"drv_0002\",\n    \"fare_amount\": 473.44,\n    \"distance_km\": 33.49,\n    \"duration_min\": 63,\n    \"completed_at\": \"2026-04-17T06:29:30.346Z\",\n    \"status\": \"completed\",\n    \"payment_status\": \"paid\"\n  },\n  \"recent_decisions\": [\n    {\n      \"verdict\": \"legitimate\",\n      \"source\": \"ai\",\n      \"risk_score\": 0.2,\n      \"decided_at\": \"2026-04-30T10:00:00.000Z\"\n    }\n  ],\n  \"recent_trips\": [\n    {\n      \"trip_id\": \"trp_00100\",\n      \"fare_amount\": 200,\n      \"payment_status\": \"paid\",\n      \"completed_at\": \"2026-04-30T10:00:00.000Z\"\n    }\n  ]\n}\n"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        144,
+        0
+      ],
+      "id": "dc9eb53a-889e-4d35-88f2-f5568c32b3f3",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "model": "={{ $env.OPENROUTER_MODEL }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        1824,
+        -16
+      ],
+      "id": "bc422bdd-ff3f-48fb-9fd0-fe4bc27d7a57",
+      "name": "OpenRouter Chat Model",
+      "credentials": {
+        "openRouterApi": {
+          "id": "A2fiVefRRkOOjgeV",
+          "name": "Fraud // OpenRouter"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nreturn items.map((it) => {\n  const { payload, driver, trip, recent_decisions, recent_trips } = it.json;\n\n  const systemPrompt =\n    \"You are a fraud detection AI for a ride-hailing platform. \" +\n    \"Analyze driver complaints about unpaid trips. Use the provided context \" +\n    \"(driver profile, trip details, complaint history) to assess if the complaint \" +\n    \"is legitimate, fraudulent, or uncertain. \" +\n    \"Return STRICT JSON only — no markdown fencing, no prose. \" +\n    \"Schema: {verdict: 'fraud'|'legitimate'|'uncertain', risk_score: number 0-1, \" +\n    \"reasoning: short string, key_factors: [strings]}. \" +\n    \"risk_score: 0=clearly legitimate, 1=clearly fraud.\";\n\n  const driverProfile = {\n    account_status: driver?.account_status,\n    flags: driver?.flags,\n    total_trips: driver?.total_trips,\n    history: driver?.history,\n  };\n\n  const userPrompt = [\n    `Complaint: \"${payload.complaint_text}\"`,\n    `Claimed amount: ${payload.claimed_amount ?? \"n/a\"}`,\n    \"\",\n    \"Trip:\",\n    JSON.stringify(trip, null, 2),\n    \"\",\n    \"Driver profile:\",\n    JSON.stringify(driverProfile, null, 2),\n    \"\",\n    \"Recent decisions for this driver (last 5):\",\n    JSON.stringify(recent_decisions ?? [], null, 2),\n    \"\",\n    \"Recent trips for this driver (last 5):\",\n    JSON.stringify(recent_trips ?? [], null, 2),\n  ].join(\"\\n\");\n\n  const hashInput = [\n  payload.driver_id || '',\n  payload.trip_id || '',\n  payload.claimed_amount ?? '',\n  (payload.complaint_text || '').toLowerCase().trim().replace(/\\s+/g, ' '),\n  driver?.account_status || 'unknown',\n  (driver?.flags || []).slice().sort().join(','),\n  driver?.history?.fraud_count_lifetime ?? 0,\n].join('|');\n\n  return {\n    json: {\n      ...it.json,\n      _prompt: {\n        system: systemPrompt,\n        user: userPrompt,\n      },\n      _hash_input: hashInput,\n    },\n  };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        336,
+        0
+      ],
+      "id": "2d50ca27-ad14-47d0-95b9-f69762e54276",
+      "name": "prepare prompt"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst promptItems = $('Merge').all();\n\nreturn items.map((it, idx) => {\n  const ctx = promptItems[idx]?.json || {};\n  const parsed = it.json.output;\n\n  const cbState = it.json._cb_after?.state || it.json._cb?.state || null;\n  const cbTripReason = it.json._cb_after?.trip_reason || null;\n\n  if (!parsed || typeof parsed !== 'object') {\n    return wrap(ctx, {\n      verdict: null,\n      source: 'ai-empty-content',\n      reasoning: 'LLM Chain returned no structured output',\n      risk_score: null,\n      key_factors: [],\n    }, cbState, cbTripReason);\n  }\n\n  return wrap(ctx, {\n    verdict: parsed.verdict,\n    source: 'ai',\n    reasoning: parsed.reasoning,\n    risk_score: parsed.risk_score,\n    key_factors: parsed.key_factors || [],\n  }, cbState, cbTripReason);\n});\n\nfunction wrap(ctx, aiDecision, cbState, cbTripReason) {\n  return {\n    json: {\n      msg_id: ctx.msg_id,\n      request_id: ctx.request_id,\n      enqueued_at: ctx.enqueued_at,\n      payload: ctx.payload,\n      driver: ctx.driver,\n      trip: ctx.trip,\n      _content_hash: ctx._content_hash,\n      ai_decision: aiDecision,\n      ai_meta: {\n        model: null,\n        tokens: { input: null, output: null, total: null },\n        cb: {\n          state: cbState,\n          trip_reason: cbTripReason,\n        },\n      },\n    },\n  };\n}\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2960,
+        -192
+      ],
+      "id": "ac402e22-2ca9-4bdd-91c0-5fe5eaacc547",
+      "name": "parse"
+    },
+    {
+      "parameters": {
+        "value": "={{ $json._hash_input }}",
+        "dataPropertyName": "_content_hash"
+      },
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 2,
+      "position": [
+        512,
+        0
+      ],
+      "id": "21bcf533-6375-4b07-9ad0-9b95e3861c54",
+      "name": "Crypto1"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "_cached_raw",
+        "key": "=fraud:cache:ai:{{ $json._content_hash }}",
+        "keyType": "string",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        720,
+        -128
+      ],
+      "id": "be6867a6-45f8-4c60-b817-b76dc8f02fda",
+      "name": "Redis",
+      "credentials": {
+        "redis": {
+          "id": "ccEsgRe97Od7Ornt",
+          "name": "Fraud Detection // Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        912,
+        -16
+      ],
+      "id": "375d2c95-a3e8-4370-8317-451b0c554c82",
+      "name": "Merge",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "893144b2-06ac-4d2b-88a0-4d7828791bc7",
+              "leftValue": "={{ $json._cached_raw }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1072,
+        -16
+      ],
+      "id": "337a3521-9f46-4ca5-92d5-6da9b16484d4",
+      "name": "not empty"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "2aeb2c32-3808-4a89-802e-95dbcb99a172",
+              "leftValue": "={{ $json.ai_decision.source }}",
+              "rightValue": "ai",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        3440,
+        -176
+      ],
+      "id": "3e62c568-b168-43f7-a7d7-7a54bb72d193",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "=fraud:cache:ai:{{ $json._content_hash }}",
+        "value": "={{ JSON.stringify({ verdict: $json.ai_decision.verdict, source: 'ai', reasoning: $json.ai_decision.reasoning, risk_score: $json.ai_decision.risk_score, key_factors: $json.ai_decision.key_factors, model: $json.ai_meta.model }) }}",
+        "expire": true,
+        "ttl": 3600
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        3600,
+        -368
+      ],
+      "id": "3f6aa39a-92df-4863-adf8-c59d80cbc95f",
+      "name": "set cache",
+      "credentials": {
+        "redis": {
+          "id": "ccEsgRe97Od7Ornt",
+          "name": "Fraud Detection // Redis"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"verdict\": {\n      \"type\": \"string\",\n      \"enum\": [\"fraud\", \"legitimate\", \"uncertain\"]\n    },\n    \"risk_score\": {\n      \"type\": \"number\",\n      \"minimum\": 0,\n      \"maximum\": 1\n    },\n    \"reasoning\": {\n      \"type\": \"string\"\n    },\n    \"key_factors\": {\n      \"type\": \"array\",\n      \"items\": { \"type\": \"string\" }\n    }\n  },\n  \"required\": [\"verdict\", \"risk_score\", \"reasoning\", \"key_factors\"],\n  \"additionalProperties\": false\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1984,
+        0
+      ],
+      "id": "5cd66cd0-3044-4503-aa71-d52cb445a4d6",
+      "name": "Structured Output Parser"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nreturn items.map((it) => {\n  const cached = JSON.parse(it.json._cached_raw);\n  return {\n    json: {\n      msg_id: it.json.msg_id,\n      request_id: it.json.request_id,\n      enqueued_at: it.json.enqueued_at,\n      payload: it.json.payload,\n      driver: it.json.driver,\n      trip: it.json.trip,\n      ai_decision: {\n        verdict: cached.verdict,\n        source: 'ai-cache',\n        reasoning: cached.reasoning,\n        risk_score: cached.risk_score,\n        key_factors: cached.key_factors,\n      },\n      ai_meta: {\n        model: cached.model,\n        tokens: { input: 0, output: 0, total: 0, cached: true },\n      },\n    },\n  };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        -432
+      ],
+      "id": "b5712906-5da1-4462-a65d-30154b7846ea",
+      "name": "return cached"
+    },
+    {
+      "parameters": {
+        "mode": "chooseBranch",
+        "useDataOfInput": 2
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        3840,
+        -352
+      ],
+      "id": "dc26910e-8ab5-412a-9133-cdbe58f99f36",
+      "name": "wait redis"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "={{ $env.OPENROUTER_MODEL_FALLBACK.replace(\"openai/\", \"\") }}",
+          "mode": "id"
+        },
+        "builtInTools": {},
+        "options": {
+          "textFormat": {
+            "textOptions": {
+              "type": "json_object",
+              "verbosity": "low"
+            }
+          },
+          "reasoningEffort": "low",
+          "maxRetries": 3
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        2400,
+        400
+      ],
+      "id": "f11d1e45-8418-46f8-a9f6-a1af227e7927",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "1FrVuyGczJBTkpf0",
+          "name": "Fraud Detection // OpenAI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst promptItems = $('Merge').all();\n\nreturn items.map((it, idx) => {\n  const ctx = promptItems[idx]?.json || {};\n  const rawError = it.json?.error;\n  const errMsg = (typeof rawError === 'string')\n    ? rawError\n    : String(rawError?.message || rawError?.name || 'unknown_error');\n\n  const cbState = it.json._cb_after?.state || it.json._cb?.state || null;\n  const cbTripReason = it.json._cb_after?.trip_reason || null;\n\n  return {\n    json: {\n      msg_id: ctx.msg_id,\n      request_id: ctx.request_id,\n      enqueued_at: ctx.enqueued_at,\n      payload: ctx.payload,\n      driver: ctx.driver,\n      trip: ctx.trip,\n      _content_hash: ctx._content_hash,\n      ai_decision: {\n        verdict: null,\n        source: 'ai-unavailable',\n        reasoning: `Both LLM providers failed: ${errMsg.slice(0, 200)}`,\n        risk_score: null,\n        key_factors: [],\n      },\n      ai_meta: {\n        model: null,\n        tokens: { input: null, output: null, total: null },\n        cb: { state: cbState, trip_reason: cbTripReason },\n      },\n    },\n  };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3136,
+        -32
+      ],
+      "id": "764ec837-0122-4a71-b926-71a695fa2861",
+      "name": "Fallback decision"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        3296,
+        -176
+      ],
+      "id": "6ee23951-497b-4a94-8086-637ccc3fdd0f",
+      "name": "Merge1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const LUA_CB_CHECK = `\nlocal key = KEYS[1]\nlocal now = tonumber(ARGV[1])\nlocal window_ms = tonumber(ARGV[2])\n\nlocal data = redis.call('HMGET', key, 'state', 'cooldown_until_ms', 'window_started_ms')\nlocal state = data[1] or 'closed'\nlocal cooldown_until_ms = tonumber(data[2]) or 0\nlocal window_started_ms = tonumber(data[3]) or now\n\n-- open → half_open if cooldown elapsed\nif state == 'open' and now >= cooldown_until_ms then\n  state = 'half_open'\n  redis.call('HMSET', key,\n    'state', 'half_open',\n    'success_count', 0,\n    'failure_count', 0,\n    'window_started_ms', now)\nend\n\n-- reset closed window if expired\nif state == 'closed' and (now - window_started_ms) > window_ms then\n  redis.call('HMSET', key,\n    'success_count', 0,\n    'failure_count', 0,\n    'window_started_ms', now)\nend\n\nredis.call('EXPIRE', key, 600)\n\nlocal allow = 1\nif state == 'open' then allow = 0 end\n\nreturn {state, allow}\n`;\n\nconst CB_KEY = 'fraud:cb:openrouter';\nconst WINDOW_MS = 30000;\n\nconst item = $input.first();\n\nconst Redis = require('ioredis');\nconst redis = new Redis({\n  host: 'redis',\n  port: 6379,\n  connectTimeout: 5000,\n  commandTimeout: 5000,\n  maxRetriesPerRequest: 1,\n});\n\ntry {\n  const [state, allowFlag] = await redis.eval(\n    LUA_CB_CHECK,\n    1,\n    CB_KEY,\n    String(Date.now()),\n    String(WINDOW_MS),\n  );\n\n  await redis.quit();\n\n  return [{\n    json: {\n      ...item.json,\n      _cb: {\n        state,\n        allow: allowFlag === 1,\n      },\n    },\n  }];\n} catch (err) {\n  try { await redis.quit(); } catch {}\n  // fail-open: не блокуємо pipeline якшо зламалось\n  return [{\n    json: {\n      ...item.json,\n      _cb: {\n        state: 'unknown',\n        allow: true,\n        error: String(err.message || err),\n      },\n    },\n  }];\n}\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1296,
+        0
+      ],
+      "id": "4dff7131-3fdc-4242-9ce9-fb4a97dec7e1",
+      "name": "CB Check"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "af5c1ba8-274a-4cd8-8d11-1baf964f0768",
+              "leftValue": "={{ $json._cb.allow }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1536,
+        0
+      ],
+      "id": "e1f75d04-a34d-4f8b-95f4-7df81aca3a07",
+      "name": "cb_open?"
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"verdict\": {\n      \"type\": \"string\",\n      \"enum\": [\"fraud\", \"legitimate\", \"uncertain\"]\n    },\n    \"risk_score\": {\n      \"type\": \"number\",\n      \"minimum\": 0,\n      \"maximum\": 1\n    },\n    \"reasoning\": {\n      \"type\": \"string\"\n    },\n    \"key_factors\": {\n      \"type\": \"array\",\n      \"items\": { \"type\": \"string\" }\n    }\n  },\n  \"required\": [\"verdict\", \"risk_score\", \"reasoning\", \"key_factors\"],\n  \"additionalProperties\": false\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        2576,
+        400
+      ],
+      "id": "7893e3d1-3fbc-4444-bf4c-4aebd63df392",
+      "name": "Structured Output Parser1"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json._prompt.user }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are a fraud detection AI for a ride-hailing platform.\nAnalyze driver complaints about unpaid trips. \n\nUse the provided context (driver profile, trip details, complaint history) to assess if the complaint is legitimate, fraudulent, or uncertain. Return STRICT JSON only - no markdown fencing, no prose. \nSchema: \n{\n  \"verdict\": 'fraud'|'legitimate'|'uncertain', \n  \"risk_score\": number 0-1,\n  \"reasoning\": short string, key_factors: [strings]\n}.\nrisk_score: 0=clearly legitimate, 1=clearly fraud."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        2416,
+        240
+      ],
+      "id": "506f388d-24e8-4e13-8533-553b03ceecc3",
+      "name": "Openai fallback",
+      "alwaysOutputData": false,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json._prompt.user }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are a fraud detection AI for a ride-hailing platform.\nAnalyze driver complaints about unpaid trips. \n\nUse the provided context (driver profile, trip details, complaint history) to assess if the complaint is legitimate, fraudulent, or uncertain. Return STRICT JSON only - no markdown fencing, no prose. \nSchema: \n{\n  \"verdict\": 'fraud'|'legitimate'|'uncertain', \n  \"risk_score\": number 0-1,\n  \"reasoning\": short string, key_factors: [strings]\n}.\nrisk_score: 0=clearly legitimate, 1=clearly fraud."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        1824,
+        -176
+      ],
+      "id": "6cf3ecf3-53fb-4c4c-bb08-309c796ed5e4",
+      "name": "call Openrouter",
+      "alwaysOutputData": false,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1824,
+        240
+      ],
+      "id": "6225f5a0-6746-4aee-a387-b473a9f61fa7",
+      "name": "to fallback"
+    },
+    {
+      "parameters": {
+        "jsCode": "const LUA_CB_REPORT = `\nlocal key = KEYS[1]\nlocal outcome = ARGV[1]\nlocal now = tonumber(ARGV[2])\nlocal trip_reason = ARGV[3]\nlocal retry_after_ms = tonumber(ARGV[4]) or 0\nlocal min_sample = tonumber(ARGV[5])\nlocal failure_threshold = tonumber(ARGV[6])\nlocal baseline_cooldown = tonumber(ARGV[7])\nlocal max_cooldown = tonumber(ARGV[8])\n\nlocal data = redis.call('HMGET', key,\n  'state', 'success_count', 'failure_count', 'consecutive_open_count')\nlocal state = data[1] or 'closed'\nlocal success_count = tonumber(data[2]) or 0\nlocal failure_count = tonumber(data[3]) or 0\nlocal consecutive_open_count = tonumber(data[4]) or 0\n\nif outcome == 'success' then\n  success_count = success_count + 1\nelse\n  failure_count = failure_count + 1\nend\n\nlocal new_state = state\nlocal cooldown_until_ms = 0\nlocal trip_now = ''\n\nlocal function compute_cooldown()\n  if trip_reason == '429' and retry_after_ms > 0 then\n    if retry_after_ms > baseline_cooldown then return retry_after_ms end\n    return baseline_cooldown\n  end\n  local backoff = baseline_cooldown * (2 ^ (consecutive_open_count - 1))\n  if backoff > max_cooldown then return max_cooldown end\n  return backoff\nend\n\nif state == 'closed' then\n  local total = success_count + failure_count\n  if total >= min_sample and (failure_count / total) >= failure_threshold then\n    new_state = 'open'\n    consecutive_open_count = consecutive_open_count + 1\n    cooldown_until_ms = now + compute_cooldown()\n    success_count = 0\n    failure_count = 0\n    trip_now = trip_reason\n  end\nelseif state == 'half_open' then\n  if outcome == 'failure' then\n    new_state = 'open'\n    consecutive_open_count = consecutive_open_count + 1\n    cooldown_until_ms = now + compute_cooldown()\n    success_count = 0\n    failure_count = 0\n    trip_now = trip_reason\n  else\n    new_state = 'closed'\n    consecutive_open_count = 0\n    success_count = 0\n    failure_count = 0\n  end\nend\n\nredis.call('HMSET', key,\n  'state', new_state,\n  'success_count', success_count,\n  'failure_count', failure_count,\n  'cooldown_until_ms', cooldown_until_ms,\n  'consecutive_open_count', consecutive_open_count,\n  'last_trip_reason', trip_now,\n  'last_update_ms', now)\n\n  if new_state ~= state then\n    redis.call('HSET', key, 'window_started_ms', now)\n  end\nredis.call('EXPIRE', key, 600)\n\nreturn {new_state, trip_now}\n`;\n\nconst CB_KEY = 'fraud:cb:openrouter';\nconst MIN_SAMPLE = 20;\nconst FAILURE_THRESHOLD = 0.5;\nconst BASELINE_COOLDOWN_MS = 30000;\nconst MAX_COOLDOWN_MS = 300000;\n\nconst item = $input.first();\n\nconst Redis = require('ioredis');\nconst redis = new Redis({\n  host: 'redis',\n  port: 6379,\n  connectTimeout: 5000,\n  commandTimeout: 5000,\n  maxRetriesPerRequest: 1,\n});\n\ntry {\n  const [newState, tripReason] = await redis.eval(\n    LUA_CB_REPORT,\n    1,\n    CB_KEY,\n    'success',\n    String(Date.now()),\n    '',\n    '0',\n    String(MIN_SAMPLE),\n    String(FAILURE_THRESHOLD),\n    String(BASELINE_COOLDOWN_MS),\n    String(MAX_COOLDOWN_MS),\n  );\n  await redis.quit();\n\n  return [{\n    json: {\n      ...item.json,\n      _cb_after: { state: newState, trip_reason: tripReason || null },\n    },\n  }];\n} catch (err) {\n  try { await redis.quit(); } catch {}\n  // fail-open: не блокируем pipeline\n  return [{\n    json: {\n      ...item.json,\n      _cb_after: { state: 'unknown', error: String(err.message || err) },\n    },\n  }];\n}\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2256,
+        -192
+      ],
+      "id": "5a28a9d2-627f-4a6f-8c11-eadb1da7b9d1",
+      "name": "CB Report Success"
+    },
+    {
+      "parameters": {
+        "jsCode": "const LUA_CB_REPORT = `\nlocal key = KEYS[1]\nlocal outcome = ARGV[1]\nlocal now = tonumber(ARGV[2])\nlocal trip_reason = ARGV[3]\nlocal retry_after_ms = tonumber(ARGV[4]) or 0\nlocal min_sample = tonumber(ARGV[5])\nlocal failure_threshold = tonumber(ARGV[6])\nlocal baseline_cooldown = tonumber(ARGV[7])\nlocal max_cooldown = tonumber(ARGV[8])\n\nlocal data = redis.call('HMGET', key,\n  'state', 'success_count', 'failure_count', 'consecutive_open_count')\nlocal state = data[1] or 'closed'\nlocal success_count = tonumber(data[2]) or 0\nlocal failure_count = tonumber(data[3]) or 0\nlocal consecutive_open_count = tonumber(data[4]) or 0\n\nif outcome == 'success' then\n  success_count = success_count + 1\nelse\n  failure_count = failure_count + 1\nend\n\nlocal new_state = state\nlocal cooldown_until_ms = 0\nlocal trip_now = ''\n\nlocal function compute_cooldown()\n  if trip_reason == '429' and retry_after_ms > 0 then\n    if retry_after_ms > baseline_cooldown then return retry_after_ms end\n    return baseline_cooldown\n  end\n  local backoff = baseline_cooldown * (2 ^ (consecutive_open_count - 1))\n  if backoff > max_cooldown then return max_cooldown end\n  return backoff\nend\n\nif state == 'closed' then\n  local total = success_count + failure_count\n  if total >= min_sample and (failure_count / total) >= failure_threshold then\n    new_state = 'open'\n    consecutive_open_count = consecutive_open_count + 1\n    cooldown_until_ms = now + compute_cooldown()\n    success_count = 0\n    failure_count = 0\n    trip_now = trip_reason\n  end\nelseif state == 'half_open' then\n  if outcome == 'failure' then\n    new_state = 'open'\n    consecutive_open_count = consecutive_open_count + 1\n    cooldown_until_ms = now + compute_cooldown()\n    success_count = 0\n    failure_count = 0\n    trip_now = trip_reason\n  else\n    new_state = 'closed'\n    consecutive_open_count = 0\n    success_count = 0\n    failure_count = 0\n  end\nend\n\nredis.call('HMSET', key,\n  'state', new_state,\n  'success_count', success_count,\n  'failure_count', failure_count,\n  'cooldown_until_ms', cooldown_until_ms,\n  'consecutive_open_count', consecutive_open_count,\n  'last_trip_reason', trip_now,\n  'last_update_ms', now)\n\n  if new_state ~= state then\n    redis.call('HSET', key, 'window_started_ms', now)\n  end\nredis.call('EXPIRE', key, 600)\n\nreturn {new_state, trip_now}\n`;\n\nconst CB_KEY = 'fraud:cb:openrouter';\nconst MIN_SAMPLE = 20;\nconst FAILURE_THRESHOLD = 0.5;\nconst BASELINE_COOLDOWN_MS = 30000;\nconst MAX_COOLDOWN_MS = 300000;\n\nconst item = $input.first();\n\n// error может прийти строкой (\"Authorization failed...\") или объектом — обрабатываем оба\nconst rawError = item.json?.error;\nconst errObj = (rawError && typeof rawError === 'object') ? rawError : {};\nconst errMsg = (typeof rawError === 'string')\n  ? rawError\n  : String(errObj?.message || errObj?.name || errObj?.code || 'unknown_error');\n\nconst statusCode =\n  errObj?.statusCode ||\n  errObj?.status ||\n  errObj?.response?.status ||\n  errObj?.cause?.status ||\n  null;\n\nlet tripReason = 'unknown';\nlet retryAfterMs = 0;\n\nif (statusCode === 429 || /\\b429\\b|rate.?limit|too.?many/i.test(errMsg)) {\n  tripReason = '429';\n  const retryAfterRaw =\n    errObj?.headers?.['retry-after'] ||\n    errObj?.response?.headers?.['retry-after'] ||\n    errObj?.responseHeaders?.['retry-after'] ||\n    null;\n  if (retryAfterRaw) {\n    const parsed = parseInt(retryAfterRaw, 10);\n    if (!isNaN(parsed) && parsed > 0) retryAfterMs = parsed * 1000;\n  }\n} else if ((statusCode && statusCode >= 500 && statusCode < 600) || /\\b5\\d{2}\\b|server.?error|service.?unavailable/i.test(errMsg)) {\n  tripReason = '5xx';\n} else if (/timeout|ETIMEDOUT|ECONNRESET|ENOTFOUND/i.test(errMsg)) {\n  tripReason = 'timeout';\n} else if (statusCode === 401 || statusCode === 403 || /authoriz|unauthorized|forbidden|api.?key|credential/i.test(errMsg)) {\n  tripReason = 'auth';\n} else {\n  tripReason = '5xx';\n}\n\nconst Redis = require('ioredis');\nconst redis = new Redis({\n  host: 'redis',\n  port: 6379,\n  connectTimeout: 5000,\n  commandTimeout: 5000,\n  maxRetriesPerRequest: 1,\n});\n\ntry {\n  const [newState, currentTripReason] = await redis.eval(\n    LUA_CB_REPORT,\n    1,\n    CB_KEY,\n    'failure',\n    String(Date.now()),\n    tripReason,\n    String(retryAfterMs),\n    String(MIN_SAMPLE),\n    String(FAILURE_THRESHOLD),\n    String(BASELINE_COOLDOWN_MS),\n    String(MAX_COOLDOWN_MS),\n  );\n  await redis.quit();\n\n  return [{\n    json: {\n      ...item.json,\n      _cb_after: {\n        state: newState,\n        trip_reason: currentTripReason || tripReason,\n      },\n      _llm_error: {\n        statusCode: statusCode || null,\n        retry_after_ms: retryAfterMs,\n        message: errMsg.slice(0, 200),\n      },\n    },\n  }];\n} catch (err) {\n  try { await redis.quit(); } catch {}\n  return [{\n    json: {\n      ...item.json,\n      _cb_after: { state: 'unknown', error: String(err.message || err) },\n    },\n  }];\n}\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2256,
+        -48
+      ],
+      "id": "19bcc54a-e362-45dc-9aad-85afc8339f6e",
+      "name": "CB Report Failure"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        4064,
+        -48
+      ],
+      "id": "437ea277-335b-4105-b591-240aa509a524",
+      "name": "out (rule based)"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        4064,
+        -352
+      ],
+      "id": "4b5b82ab-622d-4eff-8408-fdb9f58daae7",
+      "name": "out (ai)"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1808,
+        -432
+      ],
+      "id": "14fcbf80-08d4-4696-98f7-fad5c811b73e",
+      "name": "out (ai-cache)"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        2752,
+        -32
+      ],
+      "id": "f282d917-581c-47a2-9ed8-a91fd7c32e7c",
+      "name": "Merge2"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        2976,
+        -32
+      ],
+      "id": "307f3dec-6b08-4385-bb71-5a9ab927861a",
+      "name": "Merge3"
+    },
+    {
+      "parameters": {
+        "content": "## Note\nКраще б використовувати http ноду"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        2112,
+        384
+      ],
+      "typeVersion": 1,
+      "id": "e9cb44ed-969c-4d1e-90a1-b3efe1912320",
+      "name": "Sticky Note"
+    }
+  ],
+  "pinData": {
+    "When Executed by Another Workflow": [
+      {
+        "json": {
+          "msg_id": "1234567890-0",
+          "request_id": "req_a1b2c3d4-1234-5678-9abc-def012345678",
+          "payload": {
+            "idempotency_key": "example-key-001-smoke3119",
+            "driver_id": "drv_0002-smoke3119",
+            "trip_id": "trp_00165-t1-smoke3119",
+            "complaint_text": "Я виконав поїздку, оплата не зарахувалася",
+            "claimed_amount": 100,
+            "submitted_at": "2026-05-03T11:59:59.000Z",
+            "received_at": "2026-05-03T12:00:00.000Z"
+          },
+          "driver": {
+            "driver_id": "drv_0002",
+            "name": "Lee Mohr",
+            "registered_at": "2021-08-31T05:37:05.784Z",
+            "total_trips": 4745,
+            "account_status": "active",
+            "flags": [],
+            "history": {
+              "complaints_30d": 1,
+              "complaints_90d": 5,
+              "complaints_lifetime": 7,
+              "fraud_count_lifetime": 0,
+              "legitimate_count_lifetime": 7,
+              "approval_rate": 1,
+              "last_complaint_at": "2026-03-16T11:53:19.355Z"
+            }
+          },
+          "trip": {
+            "trip_id": "trp_00165",
+            "driver_id": "drv_0002",
+            "fare_amount": 473.44,
+            "distance_km": 33.49,
+            "duration_min": 63,
+            "completed_at": "2026-04-17T06:29:30.346Z",
+            "status": "completed",
+            "payment_status": "paid"
+          },
+          "recent_decisions": [
+            {
+              "verdict": "legitimate",
+              "source": "ai",
+              "risk_score": 0.2,
+              "decided_at": "2026-04-30T10:00:00.000Z"
+            }
+          ],
+          "recent_trips": [
+            {
+              "trip_id": "trp_00100",
+              "fare_amount": 200,
+              "payment_status": "paid",
+              "completed_at": "2026-04-30T10:00:00.000Z"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "connections": {
+    "OpenRouter Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "call Openrouter",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "prepare prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "prepare prompt": {
+      "main": [
+        [
+          {
+            "node": "Crypto1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Crypto1": {
+      "main": [
+        [
+          {
+            "node": "Redis",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Redis": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "not empty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "not empty": {
+      "main": [
+        [
+          {
+            "node": "return cached",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CB Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "set cache",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "wait redis",
+            "type": "main",
+            "index": 1
+          }
+        ],
+        [
+          {
+            "node": "out (rule based)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "set cache": {
+      "main": [
+        [
+          {
+            "node": "wait redis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "call Openrouter",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "return cached": {
+      "main": [
+        [
+          {
+            "node": "out (ai-cache)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "wait redis": {
+      "main": [
+        [
+          {
+            "node": "out (ai)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Openai fallback",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fallback decision": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge1": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CB Check": {
+      "main": [
+        [
+          {
+            "node": "cb_open?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "cb_open?": {
+      "main": [
+        [
+          {
+            "node": "call Openrouter",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "to fallback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser1": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Openai fallback",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "call Openrouter": {
+      "main": [
+        [
+          {
+            "node": "CB Report Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CB Report Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Openai fallback": {
+      "main": [
+        [
+          {
+            "node": "Merge2",
+            "type": "main",
+            "index": 1
+          }
+        ],
+        [
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "to fallback": {
+      "main": [
+        [
+          {
+            "node": "Openai fallback",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge2",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CB Report Success": {
+      "main": [
+        [
+          {
+            "node": "parse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CB Report Failure": {
+      "main": [
+        [
+          {
+            "node": "Openai fallback",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge2",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "out (ai)": {
+      "main": [
+        []
+      ]
+    },
+    "Merge2": {
+      "main": [
+        [
+          {
+            "node": "parse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge3": {
+      "main": [
+        [
+          {
+            "node": "Fallback decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "e2460000-d96a-423b-90d2-5aea335c74b5",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2f246882be91b80e2c29395d0dfa883349220f620aa202572208b75e22e3dcd9"
+  },
+  "id": "wWZpKiMjQO0NaT2q",
+  "tags": []
+}
