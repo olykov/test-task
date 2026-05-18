@@ -12,19 +12,31 @@ k6 сценарії для перевірки pipeline проти production URL
 
 cd load-test
 
-# далі на вибір 
+# далі на вибір  - локально або в докері
+
+brew install k6
+# aбо 
+docker pull k6
 
 # baseline — 50 RPS × 30s
 docker run --rm -v $(pwd)/scenarios:/scripts grafana/k6 run /scripts/50rps-sustained.js
+# aбо
+k6 run scenarios/50rps-sustained.js
 
 # 50 RPS × власна тривалість
 docker run --rm -e DURATION=120s -v $(pwd)/scenarios:/scripts grafana/k6 run /scripts/50rps-sustained.js
+# aбо
+DURATION=120s k6 run scenarios/50rps-sustained.js
 
 # burst до 500 RPS — перевірка backpressure (503 + Retry-After)
 docker run --rm -v $(pwd)/scenarios:/scripts grafana/k6 run /scripts/500rps-burst.js
+# aбо
+k6 run scenarios/500rps-burst.js
 
 # тригер Circuit Breaker (підвищена частка fraud-сценаріїв)
 docker run --rm -v $(pwd)/scenarios:/scripts grafana/k6 run /scripts/circuit-breaker-trigger.js
+# aбо
+k6 run scenarios/circuit-breaker-trigger.js
 ```
 
 ## Що дивитись
